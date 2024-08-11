@@ -1,16 +1,17 @@
 const express = require('express')
 const app = express()
 const jwt = require('jsonwebtoken')
+const SSLCommerzPayment = require('sslcommerz-lts')
 require('dotenv').config()
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const cors = require('cors')
+const cors = require('cors');
+const { default: axios } = require('axios');
 const port = process.env.PORT || 5000;
 
 
 // middleware
   app.use(cors());
   app.use(express.json());
-
 
   
 
@@ -25,6 +26,10 @@ const client = new MongoClient(uri, {
   }
 });
 
+const store_id = process.env.STORE_ID
+const store_passwd = process.env.STORE_PASS
+const is_live = false //true for live, false for sandbox
+
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
@@ -34,6 +39,7 @@ async function run() {
     const productCollection = client.db('BikeDB').collection('product') 
     const cartCtCollection = client.db('BikeDB').collection('carts') 
     const userCollection = client.db('BikeDB').collection('users') 
+    const OrderCollection = client.db('BikeDB').collection('order') 
 
     // barnd get
 app.get('/brand', async (req, res)=>{
@@ -46,6 +52,21 @@ app.get('/brand', async (req, res)=>{
 app.get('/product', async (req, res)=>{
    const result = await productCollection.find().toArray()
    res.send(result)
+})
+
+ //  admin save a Product a database
+ app.post('/product',  async (req, res)=>{
+  const product = req.body
+  const result = await productCollection.insertOne(product)
+  res.send(result)
+})
+
+// admin save a product a database
+
+app.post('/brand', async (req, res)=>{
+    const brand = req.body
+    const result = await brandCollection.insertOne(brand)
+    res.send(result)
 })
 
 // product info
@@ -133,7 +154,7 @@ app.post('/jwt', async(req, res)=>{
 // middleware very token
 
 const verifyToken = (req, res, next)=>{
-  console.log(req.headers.authorization);
+  // console.log(req.headers.authorization);
   
   if(!req.headers.authorization){
     return res.status(401).send({message: 'forbidden access' })
@@ -169,13 +190,21 @@ app.get('/users', verifyToken, verifyAdmin, async(req,res)=>{
     res.send(result)
 })
 
-// user delete api
+// admin user delete api
 
 app.delete('/users/:id',  verifyToken, async(req,res)=>{
      const id = req.params.id
      const query = {_id: new ObjectId(id)}
      const result = await userCollection.deleteOne(query)
      res.send(result)
+})
+
+// admin product delete api
+app.delete('/product/:id', async (req, res)=>{
+   const id = req.params.id
+   const query = {_id: new ObjectId(id)}
+   const result = await productCollection.deleteOne(query)
+   res.send(result)
 })
 
 // use admin api
@@ -205,6 +234,82 @@ app.patch('/users/admin/:id', async(req, res)=>{
     }
     const result = await userCollection.updateOne(filter, updateDoc)
     res.send(result)
+}) 
+
+// payment code
+
+const tran_id = new ObjectId().toString()
+
+app.post('/create-payment', async(req,res)=>{
+ const paymentInfo = req.body
+  const data = {
+    total_amount: paymentInfo.amount,
+    currency: paymentInfo.currency,
+    tran_id: tran_id, // use unique tran_id for each api call
+    success_url: `http://localhost:5000/success-payment/${tran_id}`,
+    fail_url: `http://localhost:5000/success-fail/${tran_id}`,
+    cancel_url: 'http://localhost:3030/cancel',
+    ipn_url: 'http://localhost:3030/ipn',
+    shipping_method: 'Courier',
+    product_name: 'Hero',
+    product_category: 'Bike',
+    product_profile: 'general',
+    cus_name: 'Customer Name',
+    cus_email: paymentInfo.name,
+    cus_add1: paymentInfo.email,
+    cus_add2: 'Dhaka',
+    cus_city: 'Dhaka',
+    cus_state: 'Dhaka',
+    cus_postcode: '1000',
+    cus_country: 'Bangladesh',
+    cus_phone: '01711111111',
+    cus_fax: '01711111111',
+    ship_name: 'Customer Name',
+    ship_add1: 'Dhaka',
+    ship_add2: 'Dhaka',
+    ship_city: 'Dhaka',
+    ship_state: 'Dhaka',
+    ship_postcode: 1000,
+    ship_country: 'Bangladesh',
+};
+// console.log(data);
+const sslcz = new SSLCommerzPayment(store_id, store_passwd, is_live)
+sslcz.init(data).then(apiResponse => {
+    // Redirect the user to payment gateway
+    let GatewayPageURL = apiResponse.GatewayPageURL
+    res.send({PaymentUrl: GatewayPageURL})
+
+   const finalOrder ={
+        paymentInfo,
+       paidStatus:false,
+       tranjectionId:tran_id
+   }
+
+  const result = OrderCollection.insertOne(finalOrder) 
+
+    console.log('Redirecting to: ', GatewayPageURL)
+});
+
+})
+
+app.post('/success-payment/:tranId', async(req,res)=>{
+      console.log(req.params.tranId);
+      const result = await OrderCollection.updateOne({tranjectionId:req.params.tranId},{
+         $set:{
+          paidStatus:true
+         }
+      })
+       
+     if(result.modifiedCount>0){
+        res.redirect(`http://localhost:5173/payment/success/${req.params.tranId}`)
+     }
+})
+
+app.post('/success-fail/:tranId',async (req,res)=>{
+    const result = await OrderCollection.deleteOne({tranjectionId:req.params.tranId})
+    if(result.deletedCount){
+      res.redirect(`http://localhost:5173/payment/fail/${req.params.tranId}`)
+    }
 })
 
     
